@@ -5,6 +5,8 @@ from time import  strftime
 import os, sys, time
 from argparse import ArgumentParser
 import platform
+from contextlib import contextmanager
+from collections import defaultdict
 
 from src.utils.preprocess import CropAndExtract
 from src.test_audio2coeff import Audio2Coeff  
@@ -14,9 +16,31 @@ from src.generate_batch import get_data
 from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
 
-def main(args):
-    #torch.backends.cudnn.enabled = False
+class TimingStats:
+    _timings = defaultdict(list)
+    
+    @classmethod
+    @contextmanager
+    def timer(cls, name):
+        start = time.time()
+        yield
+        duration = time.time() - start
+        cls._timings[name].append(duration)
+        print(f"⏱️ {name}: {duration:.3f}s")
+    
+    @classmethod
+    def print_summary(cls):
+        print("\n=== Timing Summary ===")
+        for name, times in cls._timings.items():
+            avg_time = sum(times) / len(times)
+            total_time = sum(times)
+            print(f"{name}:")
+            print(f"  Average: {avg_time:.3f}s")
+            print(f"  Total: {total_time:.3f}s")
+            print(f"  Calls: {len(times)}")
 
+
+def main(args):
     pic_path = args.source_image
     audio_path = args.driven_audio
     save_dir = os.path.join(args.result_dir, strftime("%Y_%m_%d_%H.%M.%S"))
@@ -29,73 +53,64 @@ def main(args):
     input_roll_list = args.input_roll
     ref_eyeblink = args.ref_eyeblink
     ref_pose = args.ref_pose
-
-    current_root_path = os.path.split(sys.argv[0])[0]
-
-    sadtalker_paths = init_path(args.checkpoint_dir, os.path.join(current_root_path, 'src/config'), args.size, args.old_version, args.preprocess)
-
-    #init model
-    preprocess_model = CropAndExtract(sadtalker_paths, device)
-
-    audio_to_coeff = Audio2Coeff(sadtalker_paths,  device)
     
-    if args.facerender == 'facevid2vid':
-        animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device)
-    elif args.facerender == 'pirender':
-        animate_from_coeff = AnimateFromCoeff_PIRender(sadtalker_paths, device)
-    else:
-        raise(RuntimeError('Unknown model: {}'.format(args.facerender)))
+    with TimingStats.timer("Full Pipeline"):
+        with TimingStats.timer("Initialization"):
+            current_root_path = os.path.split(sys.argv[0])[0]
+            sadtalker_paths = init_path(args.checkpoint_dir, os.path.join(current_root_path, 'src/config'), 
+                                      args.size, args.old_version, args.preprocess)
+            
+            print("Loading models...")
+            preprocess_model = CropAndExtract(sadtalker_paths, device)
+            audio_to_coeff = Audio2Coeff(sadtalker_paths, device)
+            
+            if args.facerender == 'facevid2vid':
+                animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device)
+            elif args.facerender == 'pirender':
+                animate_from_coeff = AnimateFromCoeff_PIRender(sadtalker_paths, device)
+            else:
+                raise(RuntimeError('Unknown model: {}'.format(args.facerender)))
 
-    #crop image and extract 3dmm from image
-    first_frame_dir = os.path.join(save_dir, 'first_frame_dir')
-    os.makedirs(first_frame_dir, exist_ok=True)
-    print('3DMM Extraction for source image')
-    first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(pic_path, first_frame_dir, args.preprocess,\
-                                                                             source_image_flag=True, pic_size=args.size)
-    if first_coeff_path is None:
-        print("Can't get the coeffs of the input")
-        return
+        first_frame_dir = os.path.join(save_dir, 'first_frame_dir')
+        os.makedirs(first_frame_dir, exist_ok=True)
+        
+        # Preprocess - 3DMM Extraction
+        print('3DMM Extraction for source image...')
+        with TimingStats.timer("3DMM Extraction"):
+            first_coeff_path, crop_pic_path, crop_info = preprocess_model.generate(
+                pic_path, first_frame_dir, args.preprocess,
+                source_image_flag=True, pic_size=args.size
+            )
+            
+            if first_coeff_path is None:
+                print("Can't get the coeffs of the input")
+                return
 
-    if ref_eyeblink is not None:
-        ref_eyeblink_videoname = os.path.splitext(os.path.split(ref_eyeblink)[-1])[0]
-        ref_eyeblink_frame_dir = os.path.join(save_dir, ref_eyeblink_videoname)
-        os.makedirs(ref_eyeblink_frame_dir, exist_ok=True)
-        print('3DMM Extraction for the reference video providing eye blinking')
-        ref_eyeblink_coeff_path, _, _ =  preprocess_model.generate(ref_eyeblink, ref_eyeblink_frame_dir, args.preprocess, source_image_flag=False)
-    else:
-        ref_eyeblink_coeff_path=None
+        # Audio to coefficients
+        with TimingStats.timer("Audio Processing"):
+            batch = get_data(first_coeff_path, audio_path, device, 
+                           ref_eyeblink, still=args.still)
+            
+        with TimingStats.timer("Coeff Generation"):
+            coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose)
 
-    if ref_pose is not None:
-        if ref_pose == ref_eyeblink: 
-            ref_pose_coeff_path = ref_eyeblink_coeff_path
-        else:
-            ref_pose_videoname = os.path.splitext(os.path.split(ref_pose)[-1])[0]
-            ref_pose_frame_dir = os.path.join(save_dir, ref_pose_videoname)
-            os.makedirs(ref_pose_frame_dir, exist_ok=True)
-            print('3DMM Extraction for the reference video providing pose')
-            ref_pose_coeff_path, _, _ =  preprocess_model.generate(ref_pose, ref_pose_frame_dir, args.preprocess, source_image_flag=False)
-    else:
-        ref_pose_coeff_path=None
+        # Face rendering
+        with TimingStats.timer("Data Preparation"):
+            data = get_facerender_data(
+                coeff_path, crop_pic_path, first_coeff_path, audio_path,
+                batch_size, input_yaw_list, input_pitch_list, input_roll_list,
+                expression_scale=args.expression_scale, still_mode=args.still,
+                preprocess=args.preprocess, size=args.size
+            )
 
-    #audio2ceoff
-    batch = get_data(first_coeff_path, audio_path, device, ref_eyeblink_coeff_path, still=args.still)
-    coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose_coeff_path)
+        with TimingStats.timer("Face Rendering"):
+            result = animate_from_coeff.generate(
+                data, save_dir, pic_path, crop_info,
+                enhancer=args.enhancer, background_enhancer=args.background_enhancer,
+                preprocess=args.preprocess, img_size=args.size
+            )
 
-    # 3dface render
-    if args.face3dvis:
-        from src.face3d.visualize import gen_composed_video
-        gen_composed_video(args, device, first_coeff_path, coeff_path, audio_path, os.path.join(save_dir, '3dface.mp4'))
-    
-    #coeff2video
-    data = get_facerender_data(coeff_path, crop_pic_path, first_coeff_path, audio_path, 
-                                batch_size, input_yaw_list, input_pitch_list, input_roll_list,
-                                expression_scale=args.expression_scale, still_mode=args.still, preprocess=args.preprocess, size=args.size, facemodel=args.facerender)
-    
-    result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
-                                enhancer=args.enhancer, background_enhancer=args.background_enhancer, preprocess=args.preprocess, img_size=args.size)
-    
-    shutil.move(result, save_dir+'.mp4')
-    print('The generated video is named:', save_dir+'.mp4')
+    TimingStats.print_summary()
 
     if not args.verbose:
         shutil.rmtree(save_dir)

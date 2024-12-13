@@ -64,6 +64,8 @@ def paste_pic(video_path, pic_path, crop_info, new_audio_path, full_video_path, 
         out_tmp.write(gen_img)
 
     out_tmp.release()
-
+    print(f"Temporary video file: {tmp_path}, audio file: {new_audio_path}, final save path: {full_video_path}")
+    if not os.path.exists(tmp_path):
+        print(f"Error: Temporary video file {tmp_path} does not exist!")
     save_video_with_watermark(tmp_path, new_audio_path, full_video_path, watermark=False)
     os.remove(tmp_path)

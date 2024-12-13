@@ -5,6 +5,7 @@ import os
 
 import cv2
 
+
 def load_video_to_cv2(input_path):
     video_stream = cv2.VideoCapture(input_path)
     fps = video_stream.get(cv2.CAP_PROP_FPS)
@@ -35,7 +36,13 @@ def save_video_with_watermark(video, audio, save_path, watermark=False):
             # get the root path of sadtalker.
             dir_path = os.path.dirname(os.path.realpath(__file__))
             watarmark_path = dir_path+"/../../docs/sadtalker_logo.png"
-
+        print(f"Running FFmpeg command: {cmd}")
+        if not os.path.exists(video):
+            print(f"Error: Input video file {video} does not exist!")
+        if not os.path.exists(audio):
+            print(f"Error: Input audio file {audio} does not exist!")
         cmd = r'ffmpeg -y -hide_banner -loglevel error -i "%s" -i "%s" -filter_complex "[1]scale=100:-1[wm];[0][wm]overlay=(main_w-overlay_w)-10:10" "%s"' % (temp_file, watarmark_path, save_path)
         os.system(cmd)
+        if not os.path.exists(temp_file):
+            print(f"Error: FFmpeg failed to generate the temporary file {temp_file}")
         os.remove(temp_file)

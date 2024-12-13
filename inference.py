@@ -15,6 +15,24 @@ from src.facerender.pirender_animate import AnimateFromCoeff_PIRender
 from src.generate_batch import get_data
 from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
+#temporary
+def download_video(file_path):
+    """
+    Automatically copy the video to the /content/Argos_model/results folder.
+    """
+    target_folder = "/content/Argos_model/results"
+    os.makedirs(target_folder, exist_ok=True)  # Ensure the folder exists
+    if os.path.exists(file_path):
+        local_filename = os.path.basename(file_path)
+        target_path = os.path.join(target_folder, local_filename)
+        print(f"Copying video to: {target_path}")
+        try:
+            shutil.copy(file_path, target_path)
+            print(f"Video successfully copied to {target_path}")
+        except Exception as e:
+            print(f"Error copying video: {e}")
+    else:
+        print(f"Video file not found at {file_path}")
 
 class TimingStats:
     _timings = defaultdict(list)
@@ -106,9 +124,22 @@ def main(args):
         with TimingStats.timer("Face Rendering"):
             result = animate_from_coeff.generate(
                 data, save_dir, pic_path, crop_info,
-                enhancer=args.enhancer, background_enhancer=args.background_enhancer,
+                enhancer=args.enhancer,
                 preprocess=args.preprocess, img_size=args.size
             )
+            print(f"Video generation completed. Result path: {result}")
+            if os.path.exists(result):
+                print(f"Video file {result} exists.")
+                download_video(result)  # Automatically download the generated video
+            else:
+                print(f"Video file {result} does not exist.")
+            print(os.listdir(save_dir))
+            print("Checking if the video file exists...")
+            print(f"Save directory: {save_dir}")
+            if os.path.exists(result):
+                print(f"Video file {result} exists.")
+            else:
+                print(f"Video file {result} does not exist.")
 
     TimingStats.print_summary()
 
@@ -140,7 +171,7 @@ if __name__ == '__main__':
     parser.add_argument("--preprocess", default='crop', choices=['crop', 'extcrop', 'resize', 'full', 'extfull'], help="how to preprocess the images" ) 
     parser.add_argument("--verbose",action="store_true", help="saving the intermedia output or not" ) 
     parser.add_argument("--old_version",action="store_true", help="use the pth other than safetensor version" ) 
-    parser.add_argument("--facerender", default='facevid2vid', choices=['pirender', 'facevid2vid'] ) 
+    parser.add_argument("--facerender", default='pirender', choices=['pirender', 'facevid2vid'] ) 
     
 
     # net structure and parameters
@@ -167,4 +198,3 @@ if __name__ == '__main__':
         args.device = "cpu"
 
     main(args)
-
